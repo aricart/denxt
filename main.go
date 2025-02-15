@@ -128,28 +128,36 @@ func main() {
 	}
 	fmt.Println("Connected", nc.ConnectedUrl())
 
+	var mu sync.Mutex
 	var denolet *Denolet
 
 	var last time.Time
+
+	reap := func() {
+		mu.Lock()
+		defer mu.Unlock()
+		if time.Now().Sub(last) > time.Second*10 {
+			if denolet == nil {
+				return
+			}
+			fmt.Println("stopping denolet process")
+			denolet.Stop()
+		}
+	}
+
 	ticker := time.NewTicker(time.Second * 10)
 	go func() {
 		for {
 			select {
 			case <-ticker.C:
-				if time.Now().Sub(last) > time.Second*10 {
-					if denolet == nil {
-						return
-					}
-					fmt.Println("stopping denolet process")
-					denolet.Stop()
-				}
+				reap()
 			}
 		}
 	}()
 
-	sub, err := nc.Subscribe("denolet", func(m *nats.Msg) {
-		last = time.Now()
-		fmt.Println("received a work message")
+	start := func() {
+		mu.Lock()
+		defer mu.Unlock()
 		if denolet == nil {
 			denolet = NewDenoContainer(nc, "demo.nats.io")
 			if err := denolet.Start("service.ts"); err != nil {
@@ -159,11 +167,19 @@ func main() {
 			}
 			go func() {
 				denolet.Wait()
+				mu.Lock()
+				defer mu.Unlock()
 				denolet = nil
 				fmt.Println("stopped denolet")
 			}()
 			fmt.Println("started denolet")
 		}
+	}
+
+	sub, err := nc.Subscribe("denolet", func(m *nats.Msg) {
+		last = time.Now()
+		fmt.Println("received a work message")
+		start()
 		if err := denolet.Process(m); err != nil {
 			fmt.Printf("failed to process message: %v\n", err)
 			denolet.Stop()
